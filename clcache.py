@@ -95,6 +95,7 @@ class ObjectCache:
             os.makedirs(self.dir)
         lockName = self.cacheDirectory().replace(':', '-').replace('\\', '-')
         self.lock = ObjectCacheLock(lockName, 10 * 1000)
+        self.directmode = "CLCACHE_DIRECT" in os.environ
 
     def cacheDirectory(self):
         return self.dir
@@ -124,7 +125,62 @@ class ObjectCache:
 
             stats.setCacheSize(currentSize)
 
-    def computeKey(self, compilerBinary, commandLine):
+    def getDirectIncludeFiles(self, compilerBinary, commandLine):
+        files=[]
+
+        ppcmd = [compilerBinary, "/E"]
+        ppcmd += [arg for arg in commandLine if not arg in ("-c", "/c")]
+        preprocessor = Popen(ppcmd, stdout=PIPE, stderr=PIPE)
+        (preprocessedSourceCode, pperr) = preprocessor.communicate()
+
+        re_ldirective = re.compile("^#line\s+[\d]+\s+\"([^\"]+)\"")
+
+        for l in preprocessedSourceCode.split('\n'):
+            x = re_ldirective.match(l)
+            if x:
+                files.append(os.path.abspath(x.group(1)))
+
+        for f in set(files):
+            files.append( ( self.hashFile(f), f ) )
+
+        return files
+
+    def hashFile(self, filepath):
+        h = hashlib.md5()
+        f = open(filepath,"r")
+        for data in f:
+            h.update(data)
+        f.close()
+        return h.hexdigest()
+
+    def computeKey(self, compilerBinary, commandLine, srcFile):
+
+        if self.directmode:
+            return self.computeKeyDirect( compilerBinary, commandLine, srcFile )
+
+        return self.computeKeyEP( compilerBinary, commandLine )
+
+    def computeKeyDirect(self, compilerBinary, commandLine, srcFile):
+        normalizedCmdLine = self._normalizedCommandLine(commandLine)
+
+        stat = os.stat(compilerBinary)
+        h = hashlib.md5()
+        h.update(str(stat.st_mtime))
+        h.update(str(stat.st_size))
+        h.update(' '.join(normalizedCmdLine))
+        envhash = h.hexdigest()
+
+        srchash = self.hashFile( srcFile ) 
+        return envhash + "-" + srchash
+
+    def hasHit(self, compilerBinary, commandLine, hashkey):
+        if self.directmode:
+          return self.checkManifest( compilerBinary, commandLine, hashkey)
+
+        else:
+          return hasEntry(hashkey) 
+
+    def computeKeyEP(self, compilerBinary, commandLine):
         ppcmd = [compilerBinary, "/EP"]
         ppcmd += [arg for arg in commandLine if not arg in ("-c", "/c")]
         preprocessor = Popen(ppcmd, stdout=PIPE, stderr=PIPE)
@@ -145,28 +201,81 @@ class ObjectCache:
         h.update(preprocessedSourceCode)
         return h.hexdigest()
 
+    def checkManifest(self, compiler, argv, hashkey):
+        with self.lock:
+            if self.hasManifest(hashkey):
+              md = self.getManifest( hashkey )
+              for fn in md:
+                  if not os.path.exists(fn):
+                      return False
+                  check = self.hashFile(fn)
+                  if check != md[fn]:
+                      return False
+              return True
+
+        return False 
+
+    def hasManifest(self, key):
+        with self.lock:
+            return os.path.exists(self.cachedManifestName(key))
+
     def hasEntry(self, key):
+        # in direct mode, the key is the hash of the command line args and
+        # source file
+
+        # in old clcache mode, the key is the hash of the pre-processed sources
         with self.lock:
             return os.path.exists(self.cachedObjectName(key))
 
-    def setEntry(self, key, objectFileName, compilerOutput):
+    def setEntry(self, key, objectFileName, compilerOutput, compilerError):
         with self.lock:
             if not os.path.exists(self._cacheEntryDir(key)):
                 os.makedirs(self._cacheEntryDir(key))
             copyfile(objectFileName, self.cachedObjectName(key))
             open(self._cachedCompilerOutputName(key), 'w').write(compilerOutput)
+            open(self._cachedCompilerErrorName(key), 'w').write(compilerError)
+
 
     def cachedObjectName(self, key):
         return os.path.join(self._cacheEntryDir(key), "object")
 
+    def cachedManifestName(self, key):
+        return self._cachedCompilerManifestName(key)
+
+
+    # manifest is a dict of files->hashes of all input source files before
+    # preprocessing
+    def getManifest(self, key):
+        items = dict()
+        for line in open(self.cachedManifestName(key), 'r'):
+            tmp = line.strip().split(" ",1)
+            items[tmp[1]] = tmp[0]
+        return items
+
+    def writeManifest(self, key, data=[]):
+        with self.lock:
+            m = open(self.cachedManifestName(key), 'w')
+            for d in data:
+                m.write( d[0] + " " + d[1] )
+            m.close()
+
     def cachedCompilerOutput(self, key):
         return open(self._cachedCompilerOutputName(key), 'r').read()
+
+    def cachedCompilerError(self, key):
+        return open(self._cachedCompilerErrorName(key), 'r').read()
 
     def _cacheEntryDir(self, key):
         return os.path.join(self.dir, key[:2], key)
 
+    def _cachedCompilerManifestName(self, key):
+        return os.path.join(self._cacheEntryDir(key), "manifest.txt")
+
     def _cachedCompilerOutputName(self, key):
         return os.path.join(self._cacheEntryDir(key), "output.txt")
+
+    def _cachedCompilerErrorName(self, key):
+        return os.path.join(self._cacheEntryDir(key), "error.txt")
 
     def _normalizedCommandLine(self, cmdline):
         # Remove all arguments from the command line which only influence the
@@ -490,15 +599,16 @@ def invokeRealCompiler(compilerBinary, cmdLine, captureOutput=False):
 
     returnCode = None
     output = None
+    stderr = None
     if captureOutput:
-        compilerProcess = Popen(realCmdline, universal_newlines=True, stdout=PIPE, stderr=STDOUT)
-        output = compilerProcess.communicate()[0]
+        compilerProcess = Popen(realCmdline, universal_newlines=True, stdout=PIPE, stderr=PIPE)
+        output, stderr = compilerProcess.communicate()
         returnCode = compilerProcess.returncode
     else:
         returnCode = subprocess.call(realCmdline, universal_newlines=True)
 
     printTraceStatement("Real compiler returned code %d" % returnCode)
-    return returnCode, output
+    return returnCode, output, stderr
 
 # Given a list of Popen objects, removes and returns
 # a completed Popen object.
@@ -701,8 +811,8 @@ if analysisResult != AnalysisResult.Ok:
         stats.save()
     sys.exit(invokeRealCompiler(compiler, sys.argv[1:])[0])
 
-cachekey = cache.computeKey(compiler, cmdLine)
-if cache.hasEntry(cachekey):
+cachekey = cache.computeKey(compiler, cmdLine, sourceFile)
+if cache.hasHit( compiler, cmdLine, cachekey, sourceFile ):
     with cache.lock:
         stats.registerCacheHit()
         stats.save()
@@ -715,17 +825,26 @@ if cache.hasEntry(cachekey):
     printTraceStatement("Finished. Exit code 0")
     sys.exit(0)
 else:
-    returnCode, compilerOutput = invokeRealCompiler(compiler, cmdLine, captureOutput=True)
+    returnCode, compilerOutput, compilerError = invokeRealCompiler(compiler, cmdLine, captureOutput=True)
     with cache.lock:
         stats.registerCacheMiss()
         if returnCode == 0 and os.path.exists(outputFile):
+            if cache.directmode:
+                includefiles = cache.getDirectIncludeFiles( compiler, cmdLine )
+                m = []
+                for fn in includefiles:
+                    h = cache.hashFile(fn)
+                    m.append((h,fn))
+                cache.writeManifest( cachekey, m ) 
+
             printTraceStatement("Adding file " + outputFile + " to cache using " +
                                 "key " + cachekey)
-            cache.setEntry(cachekey, outputFile, compilerOutput)
+            cache.setEntry(cachekey, outputFile, compilerOutput, compilerError)
             stats.registerCacheEntry(os.path.getsize(outputFile))
             cfg = Configuration(cache)
             cache.clean(stats, cfg.maximumCacheSize())
         stats.save()
+    sys.stdout.write(compilerError)
     sys.stdout.write(compilerOutput)
     printTraceStatement("Finished. Exit code %d" % returnCode)
     sys.exit(returnCode)
