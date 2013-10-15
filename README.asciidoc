@@ -58,6 +58,10 @@ CLCACHE_CL::
     Can be set to the actual 'cl.exe' executable to use. If this variable is
     not set, the 'clcache.py' script will scan the directories listed in the
     +PATH+ environment variable for 'cl.exe'.
+CLCACHE_CL_BASE::
+    Can be set to a filename like "cl_real.exe". clcache will look for a file
+    with this name in the same directory as "clcache.exe" (useful if you 
+    rename the 'real' cl.exe and copy clcache.exe in place)
 CLCACHE_LOG::
     If this variable is set, a bit of diagnostic information is printed which
     can help with debugging cache problems.
@@ -70,6 +74,10 @@ CLCACHE_HARDLINK::
     will be created. This is more efficient (faster, and uses less disk space)
     but doesn't work if the cache directory is on a different drive than the
     build directory.
+CLCACHE_DIRECT::
+    If set, switches on clcache's "direct" mode, similar to ccache's direct
+    mode. Cache hits should be faster as the compiler will not be invoked.
+
 
 How clcache works
 ~~~~~~~~~~~~~~~~~
@@ -113,6 +121,28 @@ If the hash sum was not yet used in the cache, clcache will forward the
 invocation to the actual compiler. Once the real compiler successfully
 finished its work, the generated object file (as well as the output printed
 by the compiler) is copied to the cache.
+
+Direct Mode
+~~~~~~~~~~~
+
+Direct mode operates in the same way as ccache's 'direct mode'. clcache
+inspects command line arguments and hashes the input source file, this
+hash is used as a key to lookup metadata from a previous build.
+
+This metadata is a list of files and md5 hashes of each. If the file
+hashes match the previous build the object file is returned along with
+compiler stderr and stdout.
+
+If the metadata does not exist or files have changed the real compiler is 
+executed and the stderr, stdout and object file saved. If the compilation
+is successful clcache now runs the same step but in "cl /E" mode to obtain
+a list if all #included files. This is used to build the metadata mentioned
+above.
+
+The main advantage of this mode is that the compiler is not invoked at all 
+for cache hits. misses incur the overhead of running the pre-processor again
+and md5ing all the inputs.
+
 
 Credits
 ~~~~~~~
