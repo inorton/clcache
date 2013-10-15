@@ -442,14 +442,20 @@ def copyOrLink(srcFilePath, dstFilePath):
     copyfile(srcFilePath, dstFilePath)
 
 def findCompilerBinary():
-    if "CLCACHE_CL" in os.environ:
-        path = os.environ["CLCACHE_CL"]
-        return path if os.path.exists(path) else None
 
     frozenByPy2Exe = hasattr(sys, "frozen")
     if frozenByPy2Exe:
         myExecutablePath = unicode(sys.executable, sys.getfilesystemencoding())
 
+    if "CLCACHE_CL_BASE" in os.environ:
+        exedir = os.path.dirname(myExecutablePath)
+        real = os.path.join( exedir, os.environ["CLCACHE_CL_BASE"] )
+        if os.path.exists(real):
+            return real
+
+    if "CLCACHE_CL" in os.environ:
+        path = os.environ["CLCACHE_CL"]
+        return path if os.path.exists(path) else None
     for dir in os.environ["PATH"].split(os.pathsep):
         path = os.path.join(dir, "cl.exe")
         if os.path.exists(path):
