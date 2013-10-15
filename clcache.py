@@ -812,7 +812,7 @@ if analysisResult != AnalysisResult.Ok:
     sys.exit(invokeRealCompiler(compiler, sys.argv[1:])[0])
 
 cachekey = cache.computeKey(compiler, cmdLine, sourceFile)
-if cache.hasHit( compiler, cmdLine, cachekey, sourceFile ):
+if cache.hasHit( compiler, cmdLine, cachekey ):
     with cache.lock:
         stats.registerCacheHit()
         stats.save()
@@ -821,6 +821,7 @@ if cache.hasHit( compiler, cmdLine, cachekey, sourceFile ):
     if os.path.exists(outputFile):
         os.remove(outputFile)
     copyOrLink(cache.cachedObjectName(cachekey), outputFile)
+    sys.stderr.write(cache.cachedCompilerError(cachekey))
     sys.stdout.write(cache.cachedCompilerOutput(cachekey))
     printTraceStatement("Finished. Exit code 0")
     sys.exit(0)
