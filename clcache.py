@@ -127,6 +127,7 @@ class ObjectCache:
 
     def getDirectIncludeFiles(self, compilerBinary, commandLine):
         files=[]
+        rv=[]
 
         ppcmd = [compilerBinary, "/E"]
         ppcmd += [arg for arg in commandLine if not arg in ("-c", "/c")]
@@ -141,9 +142,9 @@ class ObjectCache:
                 files.append(os.path.abspath(x.group(1)))
 
         for f in set(files):
-            files.append( ( self.hashFile(f), f ) )
+            rv.append( ( self.hashFile(f), f ) )
 
-        return files
+        return rv
 
     def hashFile(self, filepath):
         h = hashlib.md5()
@@ -175,10 +176,9 @@ class ObjectCache:
 
     def hasHit(self, compilerBinary, commandLine, hashkey):
         if self.directmode:
-          return self.checkManifest( compilerBinary, commandLine, hashkey)
-
+            return self.checkManifest( compilerBinary, commandLine, hashkey)
         else:
-          return hasEntry(hashkey) 
+            return hasEntry(hashkey) 
 
     def computeKeyEP(self, compilerBinary, commandLine):
         ppcmd = [compilerBinary, "/EP"]
@@ -204,14 +204,16 @@ class ObjectCache:
     def checkManifest(self, compiler, argv, hashkey):
         with self.lock:
             if self.hasManifest(hashkey):
-              md = self.getManifest( hashkey )
-              for fn in md:
-                  if not os.path.exists(fn):
-                      return False
-                  check = self.hashFile(fn)
-                  if check != md[fn]:
-                      return False
-              return True
+                md = self.getManifest( hashkey )
+                for fn in md:
+                    if not os.path.exists(fn):
+                        return False
+                    check = self.hashFile(fn)
+                    if check != md[fn]:
+                        printTraceStatement("Manifest hash changed for %s" % fn )
+                        return False
+
+                return True
 
         return False 
 
@@ -256,7 +258,7 @@ class ObjectCache:
         with self.lock:
             m = open(self.cachedManifestName(key), 'w')
             for d in data:
-                m.write( d[0] + " " + d[1] )
+                m.write( d[0] + " " + d[1] + "\n" )
             m.close()
 
     def cachedCompilerOutput(self, key):
@@ -830,17 +832,14 @@ else:
     with cache.lock:
         stats.registerCacheMiss()
         if returnCode == 0 and os.path.exists(outputFile):
+            cache.setEntry(cachekey, outputFile, compilerOutput, compilerError)
+
             if cache.directmode:
                 includefiles = cache.getDirectIncludeFiles( compiler, cmdLine )
-                m = []
-                for fn in includefiles:
-                    h = cache.hashFile(fn)
-                    m.append((h,fn))
-                cache.writeManifest( cachekey, m ) 
+                cache.writeManifest( cachekey, includefiles ) 
 
             printTraceStatement("Adding file " + outputFile + " to cache using " +
                                 "key " + cachekey)
-            cache.setEntry(cachekey, outputFile, compilerOutput, compilerError)
             stats.registerCacheEntry(os.path.getsize(outputFile))
             cfg = Configuration(cache)
             cache.clean(stats, cfg.maximumCacheSize())
