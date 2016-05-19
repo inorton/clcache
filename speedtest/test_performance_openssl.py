@@ -134,14 +134,11 @@ def setup_function(request):
     configure_openssl()
 
 
-def setup_module():
+def get_vc_envs():
     """
-    Check that our exe has been built.
+    Get the visual studio dev env vars
     :return:
     """
-    if not os.path.isfile(CLCACHE):
-        pytest.fail("please build the exe first")
-
     _, vcvars = find_visual_studio()
     with BlockMessage("getting vc envs"):
         getenvs = subprocess.check_output([os.path.join(THISDIR, "get_vc_envs.bat"), vcvars])
@@ -150,6 +147,15 @@ def setup_module():
                 name, val = line.split("=", 1)
                 ENVS[name.upper()] = val
 
+
+def setup_module():
+    """
+    Check that our exe has been built.
+    :return:
+    """
+    if not os.path.isfile(CLCACHE):
+        pytest.fail("please build the exe first")
+    get_vc_envs()
     download_openssl()
 
 
